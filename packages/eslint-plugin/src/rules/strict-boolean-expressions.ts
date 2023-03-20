@@ -9,6 +9,7 @@ export type Options = [
   {
     allowString?: boolean;
     allowNumber?: boolean;
+    allowEnum?: boolean;
     allowNullableObject?: boolean;
     allowNullableBoolean?: boolean;
     allowNullableString?: boolean;
@@ -30,6 +31,7 @@ export type MessageId =
   | 'conditionErrorNullableNumber'
   | 'conditionErrorObject'
   | 'conditionErrorNullableObject'
+  | 'conditionErrorEnum'
   | 'conditionErrorNullableEnum'
   | 'noStrictNullCheck'
   | 'conditionFixDefaultFalse'
@@ -42,7 +44,8 @@ export type MessageId =
   | 'conditionFixCompareStringLength'
   | 'conditionFixCompareEmptyString'
   | 'conditionFixCompareZero'
-  | 'conditionFixCompareNaN';
+  | 'conditionFixCompareNaN'
+  | 'conditionFixCompareEnumMember';
 
 export default util.createRule<Options, MessageId>({
   name: 'strict-boolean-expressions',
@@ -61,6 +64,7 @@ export default util.createRule<Options, MessageId>({
         properties: {
           allowString: { type: 'boolean' },
           allowNumber: { type: 'boolean' },
+          allowEnum: { type: 'boolean' },
           allowNullableObject: { type: 'boolean' },
           allowNullableBoolean: { type: 'boolean' },
           allowNullableString: { type: 'boolean' },
@@ -105,6 +109,9 @@ export default util.createRule<Options, MessageId>({
       conditionErrorNullableObject:
         'Unexpected nullable object value in conditional. ' +
         'An explicit null check is required.',
+      conditionErrorEnum:
+        'Unexpected enum value in conditional. ' +
+        'Please handle the empty/zero cases explicitly.',
       conditionErrorNullableEnum:
         'Unexpected nullable enum value in conditional. ' +
         'Please handle the nullish/zero/NaN cases explicitly.',
@@ -133,12 +140,15 @@ export default util.createRule<Options, MessageId>({
         'Change condition to check for 0 (`value !== 0`)',
       conditionFixCompareNaN:
         'Change condition to check for NaN (`!Number.isNaN(value)`)',
+      conditionFixCompareEnumMember:
+        'Change condition to check for falsy enum member (`value !== YourEnum[FalsyMemberIdentifier]`)',
     },
   },
   defaultOptions: [
     {
       allowString: true,
       allowNumber: true,
+      allowEnum: false,
       allowNullableObject: true,
       allowNullableBoolean: false,
       allowNullableString: false,
@@ -725,6 +735,102 @@ export default util.createRule<Options, MessageId>({
         return;
       }
 
+      // Known edge case: truthy primitives and enums are always valid boolean expressions
+      if (
+        (options.allowNumber && is('truthy number', 'enum')) ||
+        (options.allowString && is('truthy string', 'enum')) ||
+        (options.allowString && is('truthy string', 'truthy number', 'enum'))
+      ) {
+        return;
+      }
+
+      // enum
+      if (is('number', 'enum') || is('string', 'enum')) {
+        const enumName = getEnumName(type);
+        const falsyEnumMemberName = getFalsyEnumMemberNames(
+          typeChecker,
+          type,
+        )[0];
+
+        if (!options.allowEnum) {
+          if (isLogicalNegationExpression(node.parent!)) {
+            // if (!enum)
+            context.report({
+              node,
+              messageId: 'conditionErrorEnum',
+              suggest: [
+                {
+                  messageId: 'conditionFixCompareEnumMember',
+                  fix: util.getWrappingFixer({
+                    sourceCode,
+                    node: node.parent,
+                    innerNode: node,
+                    wrap: code =>
+                      `${code} === ${enumName}.${falsyEnumMemberName}`,
+                  }),
+                },
+                {
+                  messageId: 'conditionFixCompareNullish',
+                  fix: util.getWrappingFixer({
+                    sourceCode,
+                    node: node.parent,
+                    innerNode: node,
+                    wrap: code => `${code} == null`,
+                  }),
+                },
+                {
+                  messageId: 'conditionFixCastBoolean',
+                  fix: util.getWrappingFixer({
+                    sourceCode,
+                    node: node.parent,
+                    innerNode: node,
+                    wrap: code => `!Boolean(${code})`,
+                  }),
+                },
+              ],
+            });
+          } else {
+            // if (enum)
+            context.report({
+              node,
+              messageId: 'conditionErrorEnum',
+              suggest: [
+                {
+                  messageId: 'conditionFixCompareEnumMember',
+                  fix: util.getWrappingFixer({
+                    sourceCode,
+                    node,
+                    wrap: code =>
+                      `${code} !== ${enumName}.${falsyEnumMemberName}`,
+                  }),
+                },
+                {
+                  messageId: 'conditionFixCompareNullish',
+                  fix: util.getWrappingFixer({
+                    sourceCode,
+                    node,
+                    wrap: code => `${code} != null`,
+                  }),
+                },
+                {
+                  messageId: 'conditionFixCastBoolean',
+                  fix: util.getWrappingFixer({
+                    sourceCode,
+                    node,
+                    wrap: code => `Boolean(${code})`,
+                  }),
+                },
+              ],
+            });
+          }
+        }
+        return;
+      }
+
+      if (is('number', 'string', 'enum')) {
+        // TODO: how do we want to handle mixed enums?
+      }
+
       // nullable enum
       if (
         is('nullish', 'number', 'enum') ||
@@ -935,4 +1041,42 @@ function isArrayLengthExpression(
     objectTsNode,
   );
   return util.isTypeArrayTypeOrUnionOfArrayTypes(objectType, typeChecker);
+}
+
+function getEnumName(type: ts.Type): string | undefined {
+  const valueDeclaration = type.getSymbol()?.valueDeclaration;
+
+  if (!valueDeclaration || !ts.isEnumDeclaration(valueDeclaration)) {
+    return undefined;
+  }
+
+  return valueDeclaration.name.getText();
+}
+
+function getFalsyEnumMemberNames(
+  checker: ts.TypeChecker,
+  type: ts.Type,
+): Array<string> {
+  const names: Array<string> = [];
+  const valueDeclaration = type.getSymbol()?.valueDeclaration;
+
+  if (!valueDeclaration || !ts.isEnumDeclaration(valueDeclaration)) {
+    return names;
+  }
+
+  valueDeclaration.members.forEach(member => {
+    const memberType = checker.getTypeAtLocation(member);
+
+    if (memberType.isNumberLiteral() && memberType.value === 0) {
+      names.push(member.name.getText());
+      return;
+    }
+
+    if (memberType.isStringLiteral() && memberType.value === '') {
+      names.push(member.name.getText());
+      return;
+    }
+  });
+
+  return names;
 }

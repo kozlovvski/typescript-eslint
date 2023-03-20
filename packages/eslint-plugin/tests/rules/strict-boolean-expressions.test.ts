@@ -133,6 +133,25 @@ ruleTester.run('strict-boolean-expressions', rule, {
       `,
     }),
 
+    // enum in boolean context
+    ...batchedSingleLineTests<Options>({
+      code: noFormat`
+        enum Foo { Bar, Baz }; (val: Foo) => val ? 1 : 0
+        enum Foo { Bar, Baz }; function f(val: Foo) { if (val) return 1 }
+      `,
+      options: [{ allowEnum: true }],
+    }),
+
+    // enum edge case: always allow enum with truthy values
+    ...batchedSingleLineTests<Options>({
+      code: noFormat`
+        enum Foo { Bar = 1, Baz = 2 }; (val: Foo) => val ? 1 : 0
+        enum Foo { Bar = "bar", Baz = "baz" }; (val: Foo) => val ? 1 : 0
+        enum Foo { Bar = 1, Baz = "baz" }; (val: Foo) => val ? 1 : 0
+      `,
+      options: [{ allowEnum: false }],
+    }),
+
     // nullable enum in boolean context
     {
       code: `
@@ -1070,6 +1089,77 @@ if (y) {
               messageId: 'conditionFixCastBoolean',
               output:
                 '        function foo(x: 0 | 1 | null) { if (!Boolean(x)) {} }',
+            },
+          ],
+        },
+      ],
+    }),
+
+    // enum in boolean context
+    ...batchedSingleLineTests<MessageId, Options>({
+      options: [{ allowEnum: false }],
+      // TODO: how should we support this case?
+      // enum Foo { Bar = "", Baz = 0 }; (val: Foo) => val ? 1 : 0
+      code: noFormat`
+        enum Foo { Bar = 0, Baz = 1 }; (val: Foo) => val ? 1 : 0
+        enum Foo { Bar = 0, Baz = 1 }; (val: Foo) => !val ? 1 : 0
+        enum Foo { Bar = "", Baz = "baz" }; (val: Foo) => val ? 1 : 0
+      `,
+      errors: [
+        {
+          messageId: 'conditionErrorEnum',
+          line: 2,
+          column: 46,
+          suggestions: [
+            {
+              messageId: 'conditionFixCompareEnumMember',
+              output: `enum Foo { Bar = 0, Baz = 1 }; (val: Foo) => (val !== Foo.Bar) ? 1 : 0`,
+            },
+            {
+              messageId: 'conditionFixCompareNullish',
+              output: `enum Foo { Bar = 0, Baz = 1 }; (val: Foo) => (val != null) ? 1 : 0`,
+            },
+            {
+              messageId: 'conditionFixCastBoolean',
+              output: `enum Foo { Bar = 0, Baz = 1 }; (val: Foo) => (Boolean(val)) ? 1 : 0`,
+            },
+          ],
+        },
+        {
+          messageId: 'conditionErrorEnum',
+          line: 3,
+          column: 55,
+          suggestions: [
+            {
+              messageId: 'conditionFixCompareEnumMember',
+              output: `        enum Foo { Bar = 0, Baz = 1 }; (val: Foo) => (val === Foo.Bar) ? 1 : 0`,
+            },
+            {
+              messageId: 'conditionFixCompareNullish',
+              output: `        enum Foo { Bar = 0, Baz = 1 }; (val: Foo) => (val == null) ? 1 : 0`,
+            },
+            {
+              messageId: 'conditionFixCastBoolean',
+              output: `        enum Foo { Bar = 0, Baz = 1 }; (val: Foo) => (!Boolean(val)) ? 1 : 0`,
+            },
+          ],
+        },
+        {
+          messageId: 'conditionErrorEnum',
+          line: 4,
+          column: 59,
+          suggestions: [
+            {
+              messageId: 'conditionFixCompareEnumMember',
+              output: `        enum Foo { Bar = "", Baz = "baz" }; (val: Foo) => (val !== Foo.Bar) ? 1 : 0`,
+            },
+            {
+              messageId: 'conditionFixCompareNullish',
+              output: `        enum Foo { Bar = "", Baz = "baz" }; (val: Foo) => (val != null) ? 1 : 0`,
+            },
+            {
+              messageId: 'conditionFixCastBoolean',
+              output: `        enum Foo { Bar = "", Baz = "baz" }; (val: Foo) => (Boolean(val)) ? 1 : 0`,
             },
           ],
         },
